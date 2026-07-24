@@ -520,11 +520,11 @@ def editar_cantidad_reserva(reserva_id, nueva_cantidad):
     if estado == "aprobada":
         c.execute("SELECT capacidad FROM tipos_boleto WHERE id=?", (tipo_id,))
         cap_row = c.fetchone()
-        conn.close()
         if cap_row:
             aprobado_otros = reservado_aprobado_tipo(tipo_id) - cantidad_actual
             disponible = int(cap_row[0]) - aprobado_otros
             if nueva_cantidad > disponible:
+                conn.close()
                 return False, f"Solo hay {disponible} boletos disponibles de este tipo.", False
     tenia_lista = isinstance(lista_inv, str) and lista_inv.strip()
     if tenia_lista:
