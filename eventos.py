@@ -29,6 +29,11 @@ COLUMNAS_INVITADOS_DEFAULT = [
     {"nombre": "Puesto",             "requerido": True},
 ]
 CAMPOS_DESGLOSE_DEFAULT = ["Empresa"]
+AREAS_DEFAULT = [
+    "Comercial", "Legal y Finanzas", "CES", "MKT", "Capital Humano", "Arrendadoras",
+    "Fundación", "Inter.mx", "Beneficios", "Premium", "Middle Market", "Especialidades",
+    "Reasinter", "Alianzas", "Técnico", "Siniestros", "Servicios Generales", "Otro",
+]
 DIAS_ES   = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
 MESES_ES  = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"]
 
@@ -129,15 +134,45 @@ def init_db():
         "app_url":                 "",
         "cupos_especiales":        "{}",
         "dias_bloqueados":         "[]",
+        "areas":                   json.dumps(AREAS_DEFAULT, ensure_ascii=False),
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO configuracion (clave, valor) VALUES (?,?)", (k, v))
+
+    # Migración: columna área en reservas (para bases existentes)
+    _add_col(conn, "reservas", "area", "TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()
 
 
 def get_rule(clave, default=None):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT valor FROM configuracion WHERE clave=?", (clave,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+
+def set_rule(clave, valor):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("INSERT INTO configuracion (clave,valor) VALUES (?,?) "
+              "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
+              (clave, str(valor)))
+    conn.commit()
+    conn.close()
+
+
+def get_areas():
+    raw = get_rule("areas")
+    try:    return json.loads(raw)
+    except: return list(AREAS_DEFAULT)
+
+
+def set_areas(lista):
+    set_rule("areas", json.dumps(lista, ensure_ascii=False))
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT valor FROM configuracion WHERE clave=?", (clave,))
@@ -360,18 +395,18 @@ def generar_codigo_unico(conn):
 
 
 def add_reserva(evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad,
-                comentario, solicitante_nombre, solicitante_correo, desglose_inicial):
+                comentario, solicitante_nombre, solicitante_correo, desglose_inicial, area=""):
     conn = get_conn()
     codigo = generar_codigo_unico(conn)
     c = conn.cursor()
     c.execute(
         "INSERT INTO reservas (evento_id,tipo_boleto_id,tipo_boleto_nombre,cantidad,"
-        "comentario,creado_en,codigo,estado,solicitante_nombre,solicitante_correo,desglose_inicial) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "comentario,creado_en,codigo,estado,solicitante_nombre,solicitante_correo,desglose_inicial,area) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad,
          comentario, ahora_cdmx(), codigo, "pendiente",
          solicitante_nombre, solicitante_correo,
-         json.dumps(desglose_inicial, ensure_ascii=False))
+         json.dumps(desglose_inicial, ensure_ascii=False), area)
     )
     conn.commit()
     conn.close()
@@ -380,7 +415,7 @@ def add_reserva(evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad,
 
 def crear_reserva_manual(evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad,
                          comentario, solicitante_nombre, solicitante_correo,
-                         estado, codigo_forzado="", desglose_inicial=None):
+                         estado, codigo_forzado="", desglose_inicial=None, area=""):
     conn = get_conn()
     c = conn.cursor()
     codigo = codigo_forzado.strip().upper() if codigo_forzado.strip() else generar_codigo_unico(conn)
@@ -391,12 +426,12 @@ def crear_reserva_manual(evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad
             return False, f"Ya existe la reserva con código {codigo}."
     c.execute(
         "INSERT INTO reservas (evento_id,tipo_boleto_id,tipo_boleto_nombre,cantidad,"
-        "comentario,creado_en,codigo,estado,solicitante_nombre,solicitante_correo,desglose_inicial) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "comentario,creado_en,codigo,estado,solicitante_nombre,solicitante_correo,desglose_inicial,area) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (evento_id, tipo_boleto_id, tipo_boleto_nombre, cantidad,
          comentario, ahora_cdmx(), codigo, estado,
          solicitante_nombre, solicitante_correo,
-         json.dumps(desglose_inicial or [], ensure_ascii=False))
+         json.dumps(desglose_inicial or [], ensure_ascii=False), area)
     )
     conn.commit()
     conn.close()
@@ -900,6 +935,8 @@ if pagina == "Eventos":
             with c2:
                 sol_correo = st.text_input("Tu correo electrónico")
 
+            sol_area = st.selectbox("Tu área", get_areas(), key="sol_area_sel")
+
             cantidad = st.number_input("Cantidad de boletos", min_value=1, max_value=tope, value=1, step=1)
 
             # Desglose
@@ -950,7 +987,8 @@ if pagina == "Eventos":
                             ev["id"], tipo_id_sel, tipo_row_sel["nombre"],
                             cantidad, comentario,
                             sol_nombre.strip(), sol_correo.strip(),
-                            st.session_state.desglose_grupos
+                            st.session_state.desglose_grupos,
+                            area=sol_area
                         )
                         enviado, _ = correo_confirmacion(
                             sol_correo.strip(), sol_nombre.strip(), codigo,
@@ -1237,7 +1275,9 @@ elif pagina == "Administración":
                     c2.write(f"**{ev.get('nombre','?')}**")
                     c3.write(f"**{row['tipo_boleto_nombre']}** · {row['cantidad']} boletos")
                     c4.write(f"Disponibles: {disp} de {cap_tipo}")
-                    st.caption(f"Solicitante: {row.get('solicitante_nombre','—')} · {row.get('solicitante_correo','—')}")
+                    st.caption(f"Solicitante: {row.get('solicitante_nombre','—')} · "
+                               f"{row.get('solicitante_correo','—')}"
+                               + (f" · **Área:** {row['area']}" if row.get('area') else ""))
                     if row.get("comentario"):
                         st.caption(f"Nota: {row['comentario']}")
 
@@ -1489,6 +1529,24 @@ elif pagina == "Administración":
             st.success("Reglas actualizadas.")
 
         st.divider()
+        st.subheader("Áreas")
+        st.caption("Lista de áreas que pueden solicitar boletos. Configurable.")
+        areas_actuales = get_areas()
+        texto_areas = st.text_area(
+            "Una área por línea",
+            value="\n".join(areas_actuales),
+            height=200,
+            key="texto_areas"
+        )
+        if st.button("Guardar áreas", key="btn_guardar_areas"):
+            nuevas = [a.strip() for a in texto_areas.split("\n") if a.strip()]
+            if nuevas:
+                set_areas(nuevas)
+                st.success(f"{len(nuevas)} área(s) guardadas.")
+            else:
+                st.error("Debe haber al menos un área.")
+
+        st.divider()
         st.subheader("Correos de notificación de nuevas solicitudes")
         correos_act = get_correos_notificacion()
         texto_correos = st.text_area("Un correo por línea", value="\n".join(correos_act), height=100)
@@ -1625,11 +1683,11 @@ elif pagina == "Administración":
         if df_res.empty:
             st.info("Sin reservas con ese filtro.")
         else:
-            cols_res = ["id","codigo","tipo_boleto_nombre","cantidad","estado",
+            cols_res = ["id","codigo","tipo_boleto_nombre","cantidad","estado","area",
                         "solicitante_nombre","solicitante_correo","creado_en"]
-            st.dataframe(df_res[cols_res].rename(columns={
+            st.dataframe(df_res[[c for c in cols_res if c in df_res.columns]].rename(columns={
                 "id":"ID","codigo":"Código","tipo_boleto_nombre":"Tipo","cantidad":"Boletos",
-                "estado":"Estado","solicitante_nombre":"Solicitante",
+                "estado":"Estado","area":"Área","solicitante_nombre":"Solicitante",
                 "solicitante_correo":"Correo","creado_en":"Fecha"
             }))
 
@@ -1640,7 +1698,8 @@ elif pagina == "Administración":
 
             st.write(f"**Código:** {res_row['codigo']} · **Estado:** {res_row['estado']}")
             st.caption(f"Solicitante: {res_row.get('solicitante_nombre','—')} · "
-                       f"{res_row.get('solicitante_correo','—')}")
+                       f"{res_row.get('solicitante_correo','—')}"
+                       + (f" · **Área:** {res_row['area']}" if res_row.get('area') else ""))
 
             # Desglose
             desglose_raw = res_row.get("desglose_inicial")
@@ -1754,6 +1813,7 @@ elif pagina == "Administración":
                         tipo_man_nombre = tipos_man.loc[tipos_man["id"]==tipo_man_id,"nombre"].iloc[0]
                     man_nombre = st.text_input("Nombre del solicitante", key="man_nombre")
                     man_correo = st.text_input("Correo del solicitante", key="man_correo")
+                    man_area   = st.selectbox("Área", get_areas(), key="man_area")
                 with r2:
                     man_cantidad = st.number_input("Cantidad de boletos", min_value=1, value=1, key="man_cantidad")
                     man_estado   = st.selectbox("Estado", ["pendiente","aprobada","rechazada"], key="man_estado")
@@ -1770,7 +1830,7 @@ elif pagina == "Administración":
                             ev_man_id, tipo_man_id, tipo_man_nombre,
                             man_cantidad, man_comentario,
                             man_nombre.strip(), man_correo.strip(),
-                            man_estado, man_codigo, desglose_inicial=[]
+                            man_estado, man_codigo, desglose_inicial=[], area=man_area
                         )
                         if ok:
                             st.success(msg)
