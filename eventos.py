@@ -158,6 +158,17 @@ def init_db():
         "correos_notificacion":    json.dumps(["aega@inter.mx","jpma@inter.mx","alrf@inter.mx"], ensure_ascii=False),
         "pie_contacto":            "Para cualquier duda, contacta a:\nMargarita Escobedo: aega@inter.mx\nJuan Pablo Muniain: jpma@inter.mx\nAlejandro Romano: alrf@inter.mx",
         "app_url":                 "",
+        # Plantillas de correo editables
+        "email_confirmacion_asunto": "Confirmación de tu solicitud — (Codigo)",
+        "email_confirmacion_cuerpo": "Hola <b>(Nombre)</b>,<br><br>Recibimos tu solicitud de boletos para <b>(Evento)</b>.<br><br><b>Código de reserva:</b> (Codigo)<br><b>Tipo de boleto:</b> (Tipo)<br><b>Cantidad:</b> (Cantidad)<br>(Desglose)<br>Guarda este código — lo necesitarás para consultar tu reserva.<br><br>(Link)<br>(Contacto)<br><br><i>Correo automático, por favor no respondas.</i>",
+        "email_aprobado_asunto":     "¡Tu solicitud fue aprobada! — (Codigo)",
+        "email_aprobado_cuerpo":     "Hola <b>(Nombre)</b>,<br><br>¡Tu solicitud fue <b>APROBADA</b>!<br><br><b>Código:</b> (Codigo)<br><b>Evento:</b> (Evento)<br><b>Tipo:</b> (Tipo)<br><b>Cantidad:</b> (Cantidad)<br><br>Siguiente paso: entra a la app y sube la lista de tus invitados.<br><br>(Link)<br>(Contacto)<br><br><i>Correo automático, por favor no respondas.</i>",
+        "email_rechazado_asunto":    "Tu solicitud fue rechazada — (Codigo)",
+        "email_rechazado_cuerpo":    "Hola <b>(Nombre)</b>,<br><br>Tu solicitud fue <b>RECHAZADA</b>.<br><br><b>Código:</b> (Codigo)<br><b>Evento:</b> (Evento)<br><b>Tipo:</b> (Tipo)<br><b>Cantidad:</b> (Cantidad)<br>(Motivo)<br><br>(Contacto)<br><br><i>Correo automático, por favor no respondas.</i>",
+        "email_recordatorio_asunto": "Recordatorio: falta tu lista de invitados — (Codigo)",
+        "email_recordatorio_cuerpo": "Hola <b>(Nombre)</b>,<br><br>Tu solicitud para <b>(Evento)</b> fue aprobada, pero aún no hemos recibido tu lista de invitados.<br><br><b>Código:</b> (Codigo)<br><b>Tipo:</b> (Tipo)<br><b>Cantidad:</b> (Cantidad)<br><br>Por favor entra a la app y sube tu lista a la brevedad.<br><br>(Link)<br>(Contacto)<br><br><i>Correo automático, por favor no respondas.</i>",
+        "email_actualizacion_asunto": "Tu reserva fue actualizada — (Codigo)",
+        "email_actualizacion_cuerpo": "Hola <b>(Nombre)</b>,<br><br>El equipo actualizó tu reserva.<br><br><b>Código:</b> (Codigo)<br><b>Evento:</b> (Evento)<br><b>Tipo:</b> (Tipo)<br><b>Nueva cantidad de boletos:</b> (Cantidad)<br>(Nota)<br><br>(Link)<br>(Contacto)<br><br><i>Correo automático, por favor no respondas.</i>",
     }
     for k, v in defaults.items():
         c.execute(
@@ -225,6 +236,32 @@ def get_pie_contacto():
 
 def get_app_url():
     return get_rule("app_url", "")
+
+
+def get_plantilla_correo(tipo):
+    asunto = get_rule(f"email_{tipo}_asunto", "")
+    cuerpo = get_rule(f"email_{tipo}_cuerpo", "")
+    return asunto, cuerpo
+
+
+def set_plantilla_correo(tipo, asunto, cuerpo):
+    set_rule(f"email_{tipo}_asunto", asunto)
+    set_rule(f"email_{tipo}_cuerpo", cuerpo)
+
+
+def aplicar_vars_correo(texto, datos):
+    for clave, valor in datos.items():
+        texto = texto.replace(f"({clave})", str(valor) if valor else "")
+    return texto
+
+
+PLACEHOLDERS_INFO = {
+    "confirmacion":  ["Nombre","Codigo","Evento","Tipo","Cantidad","Desglose","Link","Contacto"],
+    "aprobado":      ["Nombre","Codigo","Evento","Tipo","Cantidad","Link","Contacto"],
+    "rechazado":     ["Nombre","Codigo","Evento","Tipo","Cantidad","Motivo","Contacto"],
+    "recordatorio":  ["Nombre","Codigo","Evento","Tipo","Cantidad","Link","Contacto"],
+    "actualizacion": ["Nombre","Codigo","Evento","Tipo","Cantidad","Nota","Link","Contacto"],
+}
 
 
 # ── Eventos ──────────────────────────────────
@@ -662,6 +699,7 @@ def _link_app():
     return f'Sigue tu reserva <a href="{url}">aquí</a>.<br>' if url else ""
 
 def correo_confirmacion(dest, nombre, codigo, evento_nombre, tipo, cantidad, desglose=None):
+    asunto_tpl, cuerpo_tpl = get_plantilla_correo("confirmacion")
     desglose_html = ""
     if desglose:
         filas = "".join(
@@ -672,41 +710,23 @@ def correo_confirmacion(dest, nombre, codigo, evento_nombre, tipo, cantidad, des
         desglose_html = (f"<br><b>Desglose:</b><br>"
                          f"<table border=1 cellspacing=0 style=border-collapse:collapse>"
                          f"<tr>{enc}</tr>{filas}</table><br>")
-    cuerpo = (
-        f"Hola <b>{nombre}</b>,<br><br>"
-        f"Recibimos tu solicitud de boletos para <b>{evento_nombre}</b>.<br><br>"
-        f"<b>Código de reserva:</b> {codigo}<br>"
-        f"<b>Tipo de boleto:</b> {tipo}<br>"
-        f"<b>Cantidad:</b> {cantidad}<br>"
-        f"{desglose_html}"
-        f"Guarda este código — lo necesitarás para consultar tu reserva.<br><br>"
-        f"{_link_app()}<br>{_bloque_contacto()}<br><br>"
-        f"<i>Correo automático, por favor no respondas.</i>"
-    )
-    return _enviar(dest, f"Confirmación de tu solicitud — código {codigo}", cuerpo)
+    url = get_app_url()
+    link_html = f'Sigue tu reserva <a href="{url}">aquí</a>.<br>' if url else ""
+    vars_c = {"Nombre": nombre, "Codigo": codigo, "Evento": evento_nombre,
+              "Tipo": tipo, "Cantidad": cantidad, "Desglose": desglose_html,
+              "Link": link_html, "Contacto": get_pie_contacto().replace("\n", "<br>")}
+    return _enviar(dest, aplicar_vars_correo(asunto_tpl, vars_c), aplicar_vars_correo(cuerpo_tpl, vars_c))
 
 def correo_resultado(dest, nombre, codigo, evento_nombre, tipo, cantidad, estado, motivo=None):
-    if estado == "aprobada":
-        asunto = f"¡Tu solicitud fue aprobada! — {codigo}"
-        cuerpo = (
-            f"Hola <b>{nombre}</b>,<br><br>¡Tu solicitud fue <b>APROBADA</b>!<br><br>"
-            f"<b>Código:</b> {codigo}<br><b>Evento:</b> {evento_nombre}<br>"
-            f"<b>Tipo:</b> {tipo}<br><b>Cantidad:</b> {cantidad}<br><br>"
-            f"Siguiente paso: entra a la app y sube la lista de tus invitados.<br><br>"
-            f"{_link_app()}<br>{_bloque_contacto()}<br><br>"
-            f"<i>Correo automático, por favor no respondas.</i>"
-        )
-    else:
-        motivo_txt = f"<br><b>Motivo:</b> {motivo}" if motivo else ""
-        asunto = f"Tu solicitud fue rechazada — {codigo}"
-        cuerpo = (
-            f"Hola <b>{nombre}</b>,<br><br>Tu solicitud fue <b>RECHAZADA</b>.<br><br>"
-            f"<b>Código:</b> {codigo}<br><b>Evento:</b> {evento_nombre}<br>"
-            f"<b>Tipo:</b> {tipo}<br><b>Cantidad:</b> {cantidad}{motivo_txt}<br><br>"
-            f"{_bloque_contacto()}<br><br>"
-            f"<i>Correo automático, por favor no respondas.</i>"
-        )
-    return _enviar(dest, asunto, cuerpo)
+    tipo_tpl = "aprobado" if estado == "aprobada" else "rechazado"
+    asunto_tpl, cuerpo_tpl = get_plantilla_correo(tipo_tpl)
+    url = get_app_url()
+    link_html = f'Sigue tu reserva <a href="{url}">aquí</a>.<br>' if url else ""
+    motivo_html = f"<br><b>Motivo:</b> {motivo}<br>" if motivo else ""
+    vars_c = {"Nombre": nombre, "Codigo": codigo, "Evento": evento_nombre,
+              "Tipo": tipo, "Cantidad": cantidad, "Motivo": motivo_html,
+              "Link": link_html, "Contacto": get_pie_contacto().replace("\n", "<br>")}
+    return _enviar(dest, aplicar_vars_correo(asunto_tpl, vars_c), aplicar_vars_correo(cuerpo_tpl, vars_c))
 
 def correo_notificacion_admin(codigo, nombre, correo_sol, evento_nombre, tipo, cantidad):
     destinatarios = get_correos_notificacion()
@@ -733,28 +753,24 @@ def correo_notificacion_admin(codigo, nombre, correo_sol, evento_nombre, tipo, c
         pass
 
 def correo_recordatorio(dest, nombre, codigo, evento_nombre, tipo, cantidad):
-    cuerpo = (
-        f"Hola <b>{nombre}</b>,<br><br>"
-        f"Tu solicitud para <b>{evento_nombre}</b> fue aprobada, "
-        f"pero aún no hemos recibido tu lista de invitados.<br><br>"
-        f"<b>Código:</b> {codigo}<br><b>Tipo:</b> {tipo}<br><b>Cantidad:</b> {cantidad}<br><br>"
-        f"Por favor entra a la app y sube tu lista a la brevedad.<br><br>"
-        f"{_link_app()}<br>{_bloque_contacto()}<br><br>"
-        f"<i>Correo automático, por favor no respondas.</i>"
-    )
-    return _enviar(dest, f"Recordatorio: falta tu lista de invitados — {codigo}", cuerpo)
+    asunto_tpl, cuerpo_tpl = get_plantilla_correo("recordatorio")
+    url = get_app_url()
+    link_html = f'Sigue tu reserva <a href="{url}">aquí</a>.<br>' if url else ""
+    vars_c = {"Nombre": nombre, "Codigo": codigo, "Evento": evento_nombre,
+              "Tipo": tipo, "Cantidad": cantidad,
+              "Link": link_html, "Contacto": get_pie_contacto().replace("\n", "<br>")}
+    return _enviar(dest, aplicar_vars_correo(asunto_tpl, vars_c), aplicar_vars_correo(cuerpo_tpl, vars_c))
 
 def correo_cantidad_modificada(dest, nombre, codigo, evento_nombre, tipo, nueva_cantidad, se_borro_lista):
-    extra = ("<br><b>Nota:</b> La lista de invitados fue eliminada porque ya no coincide "
-             "con la nueva cantidad. Vuelve a subirla.<br>" if se_borro_lista else "")
-    cuerpo = (
-        f"Hola <b>{nombre}</b>,<br><br>El equipo actualizó tu reserva.<br><br>"
-        f"<b>Código:</b> {codigo}<br><b>Evento:</b> {evento_nombre}<br>"
-        f"<b>Tipo:</b> {tipo}<br><b>Nueva cantidad:</b> {nueva_cantidad}<br>"
-        f"{extra}<br>{_link_app()}<br>{_bloque_contacto()}<br><br>"
-        f"<i>Correo automático, por favor no respondas.</i>"
-    )
-    return _enviar(dest, f"Tu reserva fue actualizada — {codigo}", cuerpo)
+    asunto_tpl, cuerpo_tpl = get_plantilla_correo("actualizacion")
+    url = get_app_url()
+    link_html = f'Sigue tu reserva <a href="{url}">aquí</a>.<br>' if url else ""
+    nota_html = ("<br><b>Nota:</b> La lista de invitados fue eliminada porque ya no coincide "
+                 "con la nueva cantidad. Vuelve a subirla.<br>" if se_borro_lista else "")
+    vars_c = {"Nombre": nombre, "Codigo": codigo, "Evento": evento_nombre,
+              "Tipo": tipo, "Cantidad": nueva_cantidad, "Nota": nota_html,
+              "Link": link_html, "Contacto": get_pie_contacto().replace("\n", "<br>")}
+    return _enviar(dest, aplicar_vars_correo(asunto_tpl, vars_c), aplicar_vars_correo(cuerpo_tpl, vars_c))
 
 
 # ════════════════════════════════════════════
@@ -1129,9 +1145,9 @@ elif pagina == "Administración":
     st.title("⚙️ Administración")
 
     (tab_sol, tab_eventos, tab_tipos, tab_reglas,
-     tab_formularios, tab_reservas, tab_respaldo, tab_seguridad) = st.tabs([
+     tab_formularios, tab_reservas, tab_correos, tab_respaldo, tab_seguridad) = st.tabs([
         "Solicitudes pendientes","Eventos","Tipos de boleto",
-        "Reglas","Formularios","Reservas","Respaldo","Seguridad"
+        "Reglas","Formularios","Reservas","Correos","Respaldo","Seguridad"
     ])
 
     # ── Solicitudes pendientes ────────────────
@@ -1511,14 +1527,17 @@ elif pagina == "Administración":
             if st.button("Actualizar cantidad", key=f"btn_ac_{res_sel_id}"):
                 ok, msg, borro = editar_cantidad_reserva(int(res_sel_id), nueva_cant)
                 if ok:
-                    st.success(msg)
                     if borro and res_row.get("solicitante_correo"):
                         correo_cantidad_modificada(res_row["solicitante_correo"],
                             res_row.get("solicitante_nombre",""), res_row["codigo"],
                             ev_res.get("nombre",""), res_row["tipo_boleto_nombre"], nueva_cant, True)
+                    st.session_state["msg_cantidad_ok"] = msg
                     st.rerun()
                 else:
                     st.error(msg)
+
+            if "msg_cantidad_ok" in st.session_state:
+                st.success(st.session_state.pop("msg_cantidad_ok"))
 
             st.divider()
             sin_lista = df_res[(df_res["estado"]=="aprobada") &
@@ -1578,6 +1597,68 @@ elif pagina == "Administración":
                             man_estado, man_codigo, desglose_inicial=[], area=man_area)
                         if ok: st.success(msg)
                         else:  st.error(msg)
+
+    # ── Correos ───────────────────────────────
+    with tab_correos:
+        st.subheader("Plantillas de correos automáticos")
+        st.caption(
+            "Edita el asunto y cuerpo de cada correo. Usa los placeholders entre paréntesis "
+            "para insertar datos reales — se reemplazan automáticamente al enviar."
+        )
+        TIPOS_CORREO = {
+            "confirmacion":  "Confirmación de solicitud (al hacer la reserva)",
+            "aprobado":      "Solicitud aprobada",
+            "rechazado":     "Solicitud rechazada",
+            "recordatorio":  "Recordatorio de subir lista de invitados",
+            "actualizacion": "Cantidad de boletos actualizada",
+        }
+        tipo_sel = st.selectbox(
+            "¿Qué correo quieres editar?",
+            list(TIPOS_CORREO.keys()),
+            format_func=lambda x: TIPOS_CORREO[x],
+            key="tipo_correo_sel"
+        )
+        placeholders_disponibles = PLACEHOLDERS_INFO.get(tipo_sel, [])
+        st.caption(
+            "Placeholders disponibles: " +
+            "  ·  ".join(f"**({p})**" for p in placeholders_disponibles)
+        )
+        st.caption(
+            "El cuerpo acepta HTML: `<b>negrita</b>`, `<br>` para salto de línea, "
+            '`<a href="URL">texto</a>` para links.'
+        )
+        asunto_actual, cuerpo_actual = get_plantilla_correo(tipo_sel)
+        nuevo_asunto = st.text_input("Asunto", value=asunto_actual, key=f"asunto_{tipo_sel}")
+        nuevo_cuerpo = st.text_area("Cuerpo (HTML)", value=cuerpo_actual, height=300, key=f"cuerpo_{tipo_sel}")
+        col_prev, col_save = st.columns([1, 1])
+        with col_prev:
+            if st.button("👁 Vista previa", key="btn_preview_correo"):
+                st.session_state["preview_correo"] = {
+                    "asunto": nuevo_asunto, "cuerpo": nuevo_cuerpo
+                }
+        with col_save:
+            if st.button("💾 Guardar plantilla", type="primary", key="btn_save_correo"):
+                set_plantilla_correo(tipo_sel, nuevo_asunto, nuevo_cuerpo)
+                st.success(f"Plantilla '{TIPOS_CORREO[tipo_sel]}' guardada.")
+        if "preview_correo" in st.session_state:
+            prev = st.session_state["preview_correo"]
+            st.divider()
+            st.markdown("**Vista previa con datos de ejemplo:**")
+            ejemplo = {
+                "Nombre": "Juan Pérez", "Codigo": "ABC123",
+                "Evento": "América vs Atlante", "Tipo": "Palco", "Cantidad": "5",
+                "Desglose": "<i>(aquí iría la tabla del desglose)</i><br>",
+                "Motivo": "<br><b>Motivo:</b> Sin cupo disponible<br>",
+                "Nota": "<br><b>Nota:</b> La lista de invitados fue eliminada.<br>",
+                "Link": 'Sigue tu reserva <a href="#">aquí</a>.<br>',
+                "Contacto": get_pie_contacto().replace("\n", "<br>"),
+            }
+            asunto_prev = aplicar_vars_correo(prev["asunto"], ejemplo)
+            cuerpo_prev = aplicar_vars_correo(prev["cuerpo"], ejemplo)
+            with st.container(border=True):
+                st.markdown(f"**Asunto:** {asunto_prev}")
+                st.divider()
+                st.markdown(cuerpo_prev, unsafe_allow_html=True)
 
     # ── Respaldo ──────────────────────────────
     with tab_respaldo:
